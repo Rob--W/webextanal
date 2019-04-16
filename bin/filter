@@ -1,0 +1,236 @@
+#!/usr/bin/env node
+"use strict";
+
+const path = require('path');
+const util = require('util');
+
+const fs = require('graceful-fs');
+const fsReadFile = util.promisify(fs.readFile);
+
+const stripJsonComments = require('strip-json-comments');
+
+const FILTERS = Object.create(null);
+
+FILTERS.permissions = class {
+    static get USAGE() {
+        return `
+Matches if any of the arguments is found in the permissions or
+optional_permissions array in manifest.json. To require multiple
+permissions at the same time, separate by commas.
+
+Example:
+filter-permissions webRequest,webRequestBlocking tabs
+matches if either webRequest and webRequestBlocking are present,
+or if tabs is present.
+`;
+    }
+    constructor(args) {
+        this.anyOfPermissionsLists = args.map(perms => perms.split(','));
+    }
+
+    _matchesArgs(permissions) {
+        return this.anyOfPermissionsLists.some(allOfPermissions => {
+            return allOfPermissions.every(p => permissions.includes(p));
+        });
+    }
+
+    async filter(logger, line) {
+        let extdir = getExtensionDirectory(line);
+        if (!extdir) {
+            logger.warn(`Not an extension directory: "${line}"`);
+            return false;
+        }
+        // TODO: Consider caching the result of directories that have alrea
+        let manifest;
+        try {
+            manifest = await getManifest(extdir);
+        } catch (e) {
+            logger.warn(`Invalid manifest: ${e}`);
+            return false;
+        }
+        let {permissions, optional_permissions} = manifest;
+        if (Array.isArray(permissions) || Array.isArray(optional_permissions)) {
+            if (!Array.isArray(permissions)) {
+                return this._matchesArgs(optional_permissions);
+            }
+            if (!Array.isArray(optional_permissions)) {
+                return this._matchesArgs(permissions);
+            }
+            return this._matchesArgs(permissions.concat(optional_permissions));
+        }
+        return false; // = this._matchesArgs([]);
+    }
+};
+
+FILTERS.manifest = class {
+    static get USAGE() {
+        return String.raw`
+Filter manifests whose key match one of the given patterns.
+Nested keys are supported via "."
+
+Example:
+filter-manifest version '^1$' '^1\.' '2'
+matches if the version is "1", starts with "1." or contains "2".
+
+`;
+    }
+
+    constructor(args) {
+        this.keys = args[0].split(".");
+        this.anyOfPatterns = args.slice(1).map(pattern => new RegExp(pattern));
+        if (!this.keys.length) {
+            throw new Error();
+        }
+    }
+
+    async filter(logger, line) {
+        let extdir = getExtensionDirectory(line);
+        if (!extdir) {
+            logger.warn(`Not an extension directory: "${line}"`);
+            return false;
+        }
+        let manifest;
+        try {
+            manifest = await getManifest(extdir);
+        } catch (e) {
+            logger.warn(`Invalid manifest: ${e}`);
+            return false;
+        }
+        let value = manifest;
+        for (let i = 0; i < this.keys.length && value != null; ++i) {
+            value = value[this.keys[i]];
+        }
+        if (value != null) {
+            return this.anyOfPatterns.some(pattern => pattern.test(value));
+        }
+        return false;
+    }
+}
+
+async function getManifest(extdir) {
+    let manifestLocation = path.join(extdir, 'manifest.json');
+    let manifestJsonData = await fsReadFile(manifestLocation, {encoding: 'utf-8'});
+    if (manifestJsonData.startsWith('\uFEFF')) {
+        manifestJsonData = manifestJsonData.slice(1);
+    }
+    let manifest;
+    try {
+        manifest = JSON.parse(manifestJsonData);
+    } catch (e) {
+        manifest = JSON.parse(stripJsonComments(manifestJsonData));
+    }
+    if (typeof manifest !== 'object' || manifest === null) {
+        throw new Error(`manifest.json does not contain an object`);
+    }
+    return manifest;
+}
+
+function getExtensionDirectory(filepath) {
+    // For now, let's be strict and only return directoryies matching the pattern.
+
+    // webextaware creates the following directory structure:
+    // . / <numeric id> / <64 chars of hex hash> /
+    let match = /^(?:.*\/)?\d+\/[a-f0-9]{64}(?=\/|$)/.exec(filepath);
+    if (match) {
+        return match[0];
+    }
+
+    // Extracted files from the network share have the following format:
+    // mnt/ebs/ unzipped/ 1 / <digits> / <single digit> / <digits> / <digits> /
+    match = /^(?:.*\/)?unzipped\/1\/\d+\/\d\/\d+\/\d+(?=\/|$)/.exec(filepath);
+    if (match) {
+        return match[0];
+    }
+}
+
+async function readLines(onLine) {
+    const readline = require('readline');
+    let rl = readline.createInterface({
+        input: process.stdin,
+    });
+    await new Promise((resolve, reject) => {
+        rl.on('line', async (line) => {
+            try {
+                await onLine(line);
+            } catch (e) {
+                reject(e);
+                if (rl) {
+                    rl.close();
+                    rl = null;
+                }
+            }
+        });
+        rl.once('close', resolve);
+    });
+}
+
+async function main() {
+    let args = process.argv.slice(1);
+    var cmd = path.basename(args.shift());
+    if (cmd === 'filter') {
+        // Run as "node filter [cmd] [...args]"
+        cmd = args.shift();
+    } else if (cmd) {
+        // Run as "node filter-[cmd] [...args]"
+        cmd = cmd.replace(/^filter-/, '');
+    }
+
+    let FilterClass = FILTERS[cmd];
+    if (!FilterClass) {
+        console.error(`Unknown filter command: ${cmd}`);
+        console.error(`Choose one of: ${Object.keys(FILTERS).join(' ')}`);
+        return 1;
+    }
+    if (args.length === 0 ||
+        args.length === 1 && ['--help', '-h'].includes(args[0])) {
+        console.error(`filter-${cmd} --help  (see README.md for more info)`);
+        console.error(FilterClass.USAGE);
+        return 1;
+    }
+
+    let filterCmd = new FilterClass(args);
+
+    let pendingPromise = Promise.resolve();
+    await readLines(async (line) => {
+        let previousPromise = pendingPromise;
+        pendingPromise = (async () => {
+            let warnings = [];
+            let logger = {
+                warn(msg) {
+                    warnings.push(msg);
+                },
+            };
+            // Process the line ASAP...
+            let wantLine = await filterCmd.filter(logger, line);
+            if (wantLine) {
+                // ... but buffer the output to maintain FIFO order.
+                await previousPromise;
+                console.log(line)
+            }
+            if (warnings.length) {
+                await previousPromise;
+                for (let warning of warnings) {
+                    console.warn(`Warning in ${line}`);
+                    console.warn(warning)
+                }
+            }
+        })();
+        // Upon catching an error, readLines will stop reading more lines.
+        await pendingPromise;
+    });
+
+    await pendingPromise;
+
+    return 0;
+}
+
+main().then((exitCode) =>{
+    if (exitCode) {
+        process.exit(exitCode);
+    }
+    // If successful exit code, just wait until the end of the event loop,
+    // so that any queued output is flushed.
+}, (e) => {
+    console.error(e);
+    process.exit(1);
+});

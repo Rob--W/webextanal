@@ -1,0 +1,3 @@
+# Source this to add this directory to the PATH.
+
+export PATH="$(cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd ):${PATH}"

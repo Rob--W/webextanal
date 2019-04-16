@@ -1,0 +1,13 @@
+{
+  "name": "webextanal",
+  "version": "0.0.1",
+  "description": "WebExtensions Analysis tools",
+  "main": "bin/filter",
+  "dependencies": {
+    "graceful-fs": "^4.1.11",
+    "strip-json-comments": "^2.0.1"
+  },
+  "devDependencies": {},
+  "author": "Rob Wu <rob@robwu.nl> (https://robwu.nl/)",
+  "license": "MPL-2.0"
+}
