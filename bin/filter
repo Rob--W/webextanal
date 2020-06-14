@@ -125,6 +125,10 @@ async function getManifest(extdir) {
     return manifest;
 }
 
+var cwdDir;
+var regexUnzipped;
+
+// Returns the part of filepath that is an extension directory.
 function getExtensionDirectory(filepath) {
     // For now, let's be strict and only return directoryies matching the pattern.
 
@@ -137,9 +141,44 @@ function getExtensionDirectory(filepath) {
 
     // Extracted files from the network share have the following format:
     // mnt/ebs/ unzipped/ 1 / <digits> / <single digit> / <digits> / <digits> /
+    // May also be unzipped_banned.
+    // Digits: / addontype-id / addon-id / channel-id / version-id / file-id /
     match = /^(?:.*\/)?unzipped\/1\/\d+\/\d\/\d+\/\d+(?=\/|$)/.exec(filepath);
     if (match) {
         return match[0];
+    }
+
+    if (!cwdDir) {
+        cwdDir = process.cwd() + "/";
+    }
+    if (!regexUnzipped) {
+        // Pattern to match the directory based on the full path. It accepts
+        // "/" and "/./" as path separator, to support the case when "filepath"
+        // starts with "./", searching from a subdirectory of "zipped" (but not
+        // yet an extension directory), e.g. cwdDir = "unzipped/1/".
+        regexUnzipped = new RegExp([
+            // Prefix:
+            '^(?:.*/)?unzipped[^/]*',
+            // addontype-id:
+            '1',
+            // addon-id:
+            '\\d+',
+            // channel-id:
+            '\\d+',
+            // version-id:
+            '\\d+',
+            // file-id, followed by components inside extension directory:
+            // Match "/." if needed, in case the input starts with "."
+            '\\d+(/\\.|(?=/|$))',
+        ].join('/(?:\\./)?'));
+    }
+
+    var abspath = cwdDir + filepath;
+    match = regexUnzipped.exec(abspath);
+    if (match && cwdDir.length < match[0].length) {
+        // Strip cwdDir (since it is not part of the input), and strip the file
+        // components at the end (since we want to match the extension rootdir).
+        return abspath.slice(cwdDir.length, match[0].length);
     }
 }
 
