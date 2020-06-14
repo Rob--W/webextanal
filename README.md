@@ -33,8 +33,8 @@ in the command-line arguments. The results can be piped to combine filters.
 ### Examples
 
 ```
-# Note: "ls -ONE D", not "ls -EL D" - see "All extension directories" below.
-ls -1d /mnt/ebs/unzipped/1/*/*/*/*/ > initialinput
+# Find all matches of: /mnt/ebs/unzipped/1/*/*/*/*/
+find /mnt/ebs/unzipped/1 -mindepth 5 -maxdepth 5 > initialinput
 
 # Example: ("cookies" AND "tabs") OR "webNavigation"
 cat initialinput | filter-permissions cookies,tabs webNavigation > output
@@ -103,12 +103,18 @@ support more directory formats.
 
 When `webextaware unzip all -o /path/to/extracted` is run, extensions are
 extracted to `/path/to/extracted`. Enter this directory, and list all extension
-directories using: `ls -1d */*`
+directories using: `find . -mindepth 2 -maxdepth 2`
 
 When the network share is used, extensions are at
 `/mnt/ebs/unzipped/ 1 / <digits> / <single digit> / <digits> / <digits> /`.
 Enter the `ebs` directory and list all extension directories using:
 
+```
+find unzipped/1 -mindepth 5 -maxdepth 5 -type d
+```
+
+If the number of directories is small enough to not exceed the maximum number
+of command line arguments, then the following can also be used instead:
 ```
 ls -1d unzipped/1/*/*/*/*/
 ```
