@@ -24,17 +24,54 @@ to your PATH for easier access and autocompletion (optional but recommended):
 
 - `... | filter-permissions [comma separated permissions] [more permissions ...]`
 - `... | filter-manifest [manifest key] [regexp] [optional more regexps ...]`
+- `... | filter-user-count [options such as 1+ or 10- or prepend, see --help]`
 
 The input is a list of files **in an extension directory** (see "Input format"
 below for more details).
 The output is the input excluding lines that did not match the filter as given
 in the command-line arguments. The results can be piped to combine filters.
 
+### Example with webextaware
+
+[`webextaware`](https://github.com/cr/webextaware`) can be used to download all
+public extensions from AMO. This requires plenty of disk space, think of 100 GB+.
+After downloading and extracting the extensions, create a list of the directory
+structure that we can use with the `filter-*` commands.
+
+```
+webextaware sync
+webextaware unzip all --nooverwrite -o /path/to/extracted
+find /path/to/extracted -mindepth 2 -maxdepth 2 > initialinput
+```
+
+Optionally, if you want to use `filter-user-count`, prepare `amo_metadata.json` from the `webextaware` cache:
+
+```
+bzip2 -kcd ~/.webextaware/amo_metadata.json.bz2 | jq 'map({"id","guid","average_daily_users"})' -c > /tmp/amo_metadata.json
+```
+
+`filter-user-count` can be used to select extensions with at least or at most some users, e.g.:
+
+```
+cat initialinput | filter-user-count 1000+ > more-than-1k
+cat more-than-1k | filter-manifest manifest_version 3 > mv3-1k-plus
+```
+
+`filter-user-count prepend` prepends the user count, which can be used to sort by users:
+
+```
+cat initialinput | filter-user-count prepend | sort -nr > extensions-sorted-by-users
+```
+
+For more options, see `filter-user-count --help`.
+For other examples of filtering, see Examples below.
+
+
 ### Examples
 
 ```
-# Find all matches of: /mnt/ebs/unzipped/1/*/*/*/*/
-find /mnt/ebs/unzipped/1 -mindepth 5 -maxdepth 5 > initialinput
+# Find all matches of: /path/to/extracted
+find /path/to/extracted -mindepth 2 -maxdepth 2 > initialinput
 
 # Example: ("cookies" AND "tabs") OR "webNavigation"
 cat initialinput | filter-permissions cookies,tabs webNavigation > output

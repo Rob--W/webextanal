@@ -9,6 +9,10 @@ const fsReadFile = util.promisify(fs.readFile);
 
 const stripJsonComments = require('strip-json-comments');
 
+// Source: https://searchfox.org/mozilla-central/rev/5c922d8b93b43c18bf65539bfc72a30f84989003/toolkit/mozapps/extensions/internal/XPIProvider.jsm#188-191
+const R_EXTENSION_ID =
+    /^(\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}|[a-z0-9-._]*@[a-z0-9-._]+)$/i;
+
 const FILTERS = Object.create(null);
 
 FILTERS.permissions = class {
@@ -104,6 +108,154 @@ matches if the version is "1", starts with "1." or contains "2".
             return this.anyOfPatterns.some(pattern => pattern.test(value));
         }
         return false;
+    }
+}
+
+FILTERS["user-count"] = class {
+    static get USAGE() {
+        return String.raw`
+Filters extensions whose usage (user counts) match the given parameters:
+Supported parameters:
+ N       Exactly N users
+ N+      N or more users
+ N-      N or less users
+ -1      Unknown number of users
+ prepend Prepend the user count before the output line.
+
+User counts are read from /tmp/amo_metadata.json (which is an
+array of objects with the keys id, guid, average_daily_users)
+and can be created from the webextaware cache file by:
+ ${this.COMMAND_SETUP_METADATA}
+
+Each line of input can be any of the following:
+- Directories created by webextaware.
+- AMO IDs (integers) ("id")
+- Extension IDs ("guid")
+
+Example:
+filter-user-count 10+ 100- prepend
+matches only lines with extensions  with at least 10 and at most 100 users,
+and prepend the user count before the line.
+
+`;
+    }
+
+    static get AMO_METADATA_JSON() {
+        return process.env.AMO_METADATA_JSON || "/tmp/amo_metadata.json";
+    }
+    static get COMMAND_SETUP_METADATA() {
+        // "webextaware sync" creates "~/.webextaware/amo_metadata.json.bz2",
+        // whose format is documented at:
+        // https://addons-server.readthedocs.io/en/latest/topics/api/addons.html#search
+        //
+        // The metadata file can contain 30k+ entries and is rather large.
+        // To avoid the overhead of decompression and deserializing the whole
+        // JSON, prepare the data upfront with the minimal keys, once.
+        const jq = `| jq 'map({"id","guid","average_daily_users"})' -c`;
+        return `bzip2 -kcd ~/.webextaware/amo_metadata.json.bz2 ${jq} > /tmp/amo_metadata.json`
+            .replace("/tmp/amo_metadata.json", this.AMO_METADATA_JSON);
+    }
+
+    constructor(args) {
+        this.conditions = [];
+        this.prepend = false;
+
+        let rArgPattern = /^(-?\d+)([+-]?)$/;
+        for (let arg of args) {
+            let parsed = rArgPattern.exec(arg);
+            if (parsed) {
+                this._addCondition(+parsed[1], parsed[2]);
+            } else if (arg === "prepend") {
+                this.prepend = true;
+            } else {
+                throw new Error(`Unsupported argument: ${arg}`);
+            }
+        }
+
+        this._metadataReadyPromise = this._initializeMetadata();
+        this.userCountByAMOId = new Map();
+        this.userCountByExtId = new Map();
+    }
+
+    _addCondition(num, op) {
+        let func;
+        if (op === "") {
+            func = n => n === num;
+        } else if (op === "+") {
+            func = n => n >= num;
+        } else if (op === "-") {
+            func = n => n <= num;
+        } else {
+            throw new Error(`Unsupported operator: "${op}"`);
+        }
+        this.conditions.push(func);
+    }
+
+    _matchesCondition(n) {
+        return this.conditions.every(func => func(n));
+    }
+
+    async _initializeMetadata() {
+        const AMO_METADATA_JSON = this.constructor.AMO_METADATA_JSON;
+
+        let metadata;
+        try {
+            metadata = JSON.parse(
+                await fsReadFile(AMO_METADATA_JSON, { encoding: "utf-8" })
+            );
+            if (!Array.isArray(metadata)) {
+                throw new Error("The data is not an array");
+            }
+        } catch (e) {
+            throw new Error(
+                `Unable to load AMO metadata from ${AMO_METADATA_JSON}: ${e}
+To create the file, run:
+${this.constructor.COMMAND_SETUP_METADATA}`
+            );
+        }
+
+        for (let amoAddon of metadata) {
+            let userCount = amoAddon.average_daily_users;
+            this.userCountByAMOId.set(amoAddon.id, userCount);
+            this.userCountByExtId.set(amoAddon.guid, userCount);
+        }
+    }
+
+    async filter(logger, line) {
+        // webextaware creates the following directory structure:
+        // . / <amo id> / <64 chars of hex hash> /
+        let match =
+            /^(?:.*\/)?(\d+)\/[a-f0-9]{64}(?=\/|$)/.exec(line) ||
+            // AMO ID
+            /^(\d+)$/.exec(line);
+        let amoId, extId;
+        if (match) {
+            amoId = parseInt(match[1]);
+        } else if (R_EXTENSION_ID.test(line)) {
+            extId = line;
+        } else {
+            logger.warn(`Not a path from webextaware, AMO ID or addon ID: "${line}"`);
+            return false;
+        }
+        await this._metadataReadyPromise;
+        let userCount;
+        if (amoId) {
+            userCount = this.userCountByAMOId.get(amoId);
+        } else if (extId) {
+            userCount = this.userCountByExtId.get(extId);
+        }
+        if (userCount == null) {
+            userCount = -1;
+        }
+
+        if (!this._matchesCondition(userCount)) {
+            return false;
+        }
+        if (this.prepend) {
+            logger.replaceOutputLine(`${userCount}\t${line}`);
+            return true;
+        }
+        return true;
     }
 }
 
@@ -234,9 +386,13 @@ async function main() {
         let previousPromise = pendingPromise;
         pendingPromise = (async () => {
             let warnings = [];
+            let outputLine = line;
             let logger = {
                 warn(msg) {
                     warnings.push(msg);
+                },
+                replaceOutputLine(newOutputLine) {
+                    outputLine = newOutputLine;
                 },
             };
             // Process the line ASAP...
@@ -244,7 +400,7 @@ async function main() {
             if (wantLine) {
                 // ... but buffer the output to maintain FIFO order.
                 await previousPromise;
-                console.log(line)
+                console.log(outputLine)
             }
             if (warnings.length) {
                 await previousPromise;
