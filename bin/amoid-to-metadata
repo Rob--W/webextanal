@@ -1,0 +1,102 @@
+#!/usr/bin/env node
+
+"use strict";
+
+const fs = require("fs/promises");
+const readline = require('readline');
+
+const USAGE = `
+amoid-to-metadata [template string]
+   with environment variables (and current values):
+   AMO_METADATA_JSON=${process.env.AMO_METADATA_JSON}
+   IGNORE_MISSING_ADDON=${process.env.IGNORE_MISSING_ADDON}
+
+For each AMO ID in AMO_METADATA_JSON, this command outputs the template
+string with the details filled in.
+By default, the program exits early with an error if an unknown AMO ID
+is encountered. To disable that, set IGNORE_MISSING_ADDON=1
+
+Example
+
+echo 1 | amoid-to-metadata %id% %average_daily_users%
+echo 1 | amoid-to-metadata %id% %average_daily_users%
+`;
+
+async function readLines(onLineSync) {
+    let rl = readline.createInterface({
+        input: process.stdin,
+    });
+    await new Promise((resolve, reject) => {
+        rl.on('line', (line) => {
+            try {
+                onLineSync(line);
+            } catch (e) {
+                reject(e);
+                if (rl) {
+                    rl.close();
+                    rl = null;
+                }
+            }
+        });
+        rl.once('close', resolve);
+    });
+}
+
+async function loadMetadata() {
+    const AMO_METADATA_JSON = process.env.AMO_METADATA_JSON;
+    if (!AMO_METADATA_JSON) {
+        throw new Error(`AMO_METADATA_JSON environment variable must be set!
+The file must contain a JSON-formatted list of addon objects, at least with
+keys that are present in the given template.
+`);
+    }
+    // Must be a JSON-formatted array of objects.
+    // The objects must have at least the "id" key, and any other key that is
+    // part of the template string.
+    const data = await fs.readFile(AMO_METADATA_JSON, { encoding: "utf-8" });
+    const addons = JSON.parse(data);
+    const metadata = new Map();
+    for (let addon of addons) {
+        metadata.set(addon.id, addon);
+    }
+    console.assert(metadata.size, "Metadata must be non-empty");
+    return metadata;
+}
+
+async function main() {
+    const metadata = await loadMetadata();
+    const TEMPLATESTRING = process.argv.slice(2).join(" ");
+    if (!TEMPLATESTRING) {
+        console(USAGE);
+        return;
+    }
+    const IGNORE_MISSING_ADDON = !!process.env.IGNORE_MISSING_ADDON;
+    await readLines(line => {
+        // Assuming every line to contain only an AMO id.
+        // Turn into integer.
+        const amoid = +line;
+        if (!Number.isInteger(amoid)) {
+            throw new Error(`Line must be an integer: ${amoid}`);
+        }
+        const a = metadata.get(amoid);
+        if (!a) {
+            if (IGNORE_MISSING_ADDON) {
+                return;
+            }
+            throw new Error(`Encountered unknown AMO ID: ${amoid}
+Set IGNORE_MISSING_ADDON=1 environment variable to ignore missing addons`);
+        }
+        console.log(TEMPLATESTRING.replace(/%([^%]+)%/g, (_, key) => a[key]));
+    });
+}
+
+main().then((exitCode) =>{
+    if (exitCode) {
+        process.exit(exitCode);
+    }
+    // If successful exit code, just wait until the end of the event loop,
+    // so that any queued output is flushed.
+}, (e) => {
+    console.error(e);
+    process.exit(1);
+});

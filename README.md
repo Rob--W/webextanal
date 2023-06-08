@@ -20,6 +20,8 @@ to your PATH for easier access and autocompletion (optional but recommended):
 
 ## Usage
 
+### filter
+
 `filter` is the main tool, and shorthands are symlinked to it. Usage:
 
 - `... | filter-permissions [comma separated permissions] [more permissions ...]`
@@ -30,6 +32,21 @@ The input is a list of files **in an extension directory** (see "Input format"
 below for more details).
 The output is the input excluding lines that did not match the filter as given
 in the command-line arguments. The results can be piped to combine filters.
+
+### amoid-to-metadata
+
+`amoid-to-metadata` expands an AMO ID to a formatted string with metadata.
+Usage:
+
+- `... | amoid-to-metadata [template with %var% for variables]`
+
+Example: The following prints the ID + average daily users for addon with ID 1.
+
+```sh
+export AMO_METADATA_JSON=/path/to/amo_metadata.json
+export IGNORE_MISSING_ADDON=1
+echo 1 | amoid-to-metadata %id% %average_daily_users%
+```
 
 ### Example with webextaware
 
