@@ -50,7 +50,7 @@ echo 1 | amoid-to-metadata %id% %average_daily_users%
 
 ### Example with webextaware
 
-[`webextaware`](https://github.com/cr/webextaware`) can be used to download all
+[`webextaware`](https://github.com/cr/webextaware) can be used to download all
 public extensions from AMO. This requires plenty of disk space, think of 100 GB+.
 After downloading and extracting the extensions, create a list of the directory
 structure that we can use with the `filter-*` commands.
