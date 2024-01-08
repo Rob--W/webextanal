@@ -67,7 +67,7 @@ async function main() {
     const metadata = await loadMetadata();
     const TEMPLATESTRING = process.argv.slice(2).join(" ");
     if (!TEMPLATESTRING) {
-        console(USAGE);
+        console.log(USAGE);
         return;
     }
     const IGNORE_MISSING_ADDON = !!process.env.IGNORE_MISSING_ADDON;
