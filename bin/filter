@@ -6,8 +6,12 @@ const util = require('util');
 
 const fs = require('graceful-fs');
 const fsReadFile = util.promisify(fs.readFile);
+const fsReadDir = util.promisify(fs.readdir);
 
 const stripJsonComments = require('strip-json-comments');
+
+const weApiFinder = require("../helpers/we-api-finder");
+const ConcurrentTaskQueue = require("../helpers/concurrent-task-queue");
 
 // Source: https://searchfox.org/mozilla-central/rev/5c922d8b93b43c18bf65539bfc72a30f84989003/toolkit/mozapps/extensions/internal/XPIProvider.jsm#188-191
 const R_EXTENSION_ID =
@@ -110,6 +114,107 @@ matches if the version is "1", starts with "1." or contains "2".
         return false;
     }
 }
+
+FILTERS["api-usage"] = class {
+    static get USAGE() {
+        return `
+Filters extensions that reference any of the APIs.
+The extension directory root of each input line is considered, even if
+the input line is a file name.
+
+Example:
+filter-api-usage tabs.create storage.local.set
+matches if any of the given APIs are present.
+
+filter-api-usage --log-usage tabs.create
+will not only show the matched line, but also append a space-separated
+list of matched APIs.
+`;
+    }
+    constructor(args) {
+        this.qc = new weApiFinder.QueryCompiler();
+        this.logUsage = false;
+
+        for (let arg of args) {
+            if (arg.startsWith("--")) {
+                if (arg === "--log-usage") {
+                    this.logUsage = true;
+                } else {
+                    throw new Error(`Unsupported argument: ${arg}`);
+                }
+            } else {
+                this.qc.addQuery(arg);
+            }
+        }
+        this.seenExts = new Set();
+
+        // We'd like to maximize parallelism, but at some point we are IO-bound
+        // and memory-bound. In theory we could readdir + stat (size) to
+        // estimate the memory usage upfront to maximize the throughput further.
+        // For simplicity, we use a fixed concurrency limit instead of a dynamic
+        // one. TODO: Configurable by CLI param?
+        this.ioTaskQueue = new ConcurrentTaskQueue(500);
+    }
+
+    async filter(logger, line) {
+        let extdir = getExtensionDirectory(line);
+        if (!extdir) {
+            logger.warn(`Not an extension directory: "${line}"`);
+            return false;
+        }
+        if (this.seenExts.has(extdir)) {
+            // Already seen before, handled by previous lines.
+            return false;
+        }
+        this.seenExts.add(extdir);
+        return this.ioTaskQueue.queueTask(async () => {
+            let jsFilePaths;
+            try {
+                jsFilePaths = await this._listExtensionFiles(extdir);
+            } catch (e) {
+                logger.warn(`Failed to list directory: ${extdir} -- ${e}`);
+                return false;
+            }
+            const qm = this.qc.newQueryMatcher();
+            try {
+                for (let prom of jsFilePaths.map(p => fsReadFile(p, "utf-8"))) {
+                    qm.addSource(await prom);
+                }
+            } catch (e) {
+                logger.warn(`Failed to read directory: ${extdir} -- ${e}`);
+                logger.warn(`Tried to read: ${jsFilePaths}`);
+                return false;
+            }
+            qm.findMatches();
+            const results = Array.from(qm.getMatchedResults());
+            if (!results.length) {
+                return false;
+            }
+            if (this.logUsage) {
+                logger.replaceOutputLine(extdir + " " + results.join(" "));
+            } else {
+                logger.replaceOutputLine(extdir);
+            }
+            return true;
+        });
+    }
+
+    async _listExtensionFiles(extdir) {
+        // Note: fs.readdir + recursive:true is synchronous in practice:
+        // https://github.com/nodejs/node/issues/51749
+        let entries = await fsReadDir(extdir, {
+            withFileTypes: true,
+            // recursive, without following symlinks:
+            recursive: true,
+        });
+        // Ignore non-files (directories, symlinks, etc.)
+        entries = entries.filter(de => de.isFile());
+        // Ignore non-JS files (html, images, json, etc.)
+        entries = entries.filter(de => de.name.endsWith(".js"));
+        // parentPath: Node v21.4.0+ / (deprecated) path: Node v18.17.0+
+        return entries.map(de => path.join(de.parentPath || de.path, de.name));
+    }
+};
 
 FILTERS["user-count"] = class {
     static get USAGE() {

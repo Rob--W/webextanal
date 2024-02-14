@@ -27,6 +27,7 @@ to your PATH for easier access and autocompletion (optional but recommended):
 - `... | filter-permissions [comma separated permissions] [more permissions ...]`
 - `... | filter-manifest [manifest key] [regexp] [optional more regexps ...]`
 - `... | filter-user-count [options such as 1+ or 10- or prepend, see --help]`
+- `... | filter-api-usage [options and/or list of api names, see --help]`
 
 The input is a list of files **in an extension directory** (see "Input format"
 below for more details).
