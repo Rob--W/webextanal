@@ -225,7 +225,7 @@ ${this.constructor.COMMAND_SETUP_METADATA}`
         // webextaware creates the following directory structure:
         // . / <amo id> / <64 chars of hex hash> /
         let match =
-            /^(?:.*\/)?(\d+)\/[a-f0-9]{64}(?=\/|$)/.exec(line) ||
+            /^(?:.*\/)?(\d+)\/[a-f0-9]{64}(?=\/| |$)/.exec(line) ||
             // AMO ID
             /^(\d+)$/.exec(line);
         let amoId, extId;
@@ -286,7 +286,7 @@ function getExtensionDirectory(filepath) {
 
     // webextaware creates the following directory structure:
     // . / <numeric id> / <64 chars of hex hash> /
-    let match = /^(?:.*\/)?\d+\/[a-f0-9]{64}(?=\/|$)/.exec(filepath);
+    let match = /^(?:.*\/)?\d+\/[a-f0-9]{64}(?=\/| |$)/.exec(filepath);
     if (match) {
         return match[0];
     }
