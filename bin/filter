@@ -397,13 +397,12 @@ async function main() {
             };
             // Process the line ASAP...
             let wantLine = await filterCmd.filter(logger, line);
+            // ... but buffer the output to maintain FIFO order.
+            await previousPromise;
             if (wantLine) {
-                // ... but buffer the output to maintain FIFO order.
-                await previousPromise;
                 console.log(outputLine)
             }
             if (warnings.length) {
-                await previousPromise;
                 for (let warning of warnings) {
                     console.warn(`Warning in ${line}`);
                     console.warn(warning)
