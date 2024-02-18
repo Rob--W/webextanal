@@ -10,7 +10,7 @@ const fsReadDir = util.promisify(fs.readdir);
 
 const stripJsonComments = require('strip-json-comments');
 
-const weApiFinder = require("../helpers/we-api-finder");
+const weApiFinder = require("../helpers/we-api-finder/async");
 const ConcurrentTaskQueue = require("../helpers/concurrent-task-queue");
 
 // Source: https://searchfox.org/mozilla-central/rev/5c922d8b93b43c18bf65539bfc72a30f84989003/toolkit/mozapps/extensions/internal/XPIProvider.jsm#188-191
@@ -68,6 +68,9 @@ or if tabs is present.
         }
         return false; // = this._matchesArgs([]);
     }
+
+    async cleanupAndDestroy() {
+    }
 };
 
 FILTERS.manifest = class {
@@ -112,6 +115,9 @@ matches if the version is "1", starts with "1." or contains "2".
             return this.anyOfPatterns.some(pattern => pattern.test(value));
         }
         return false;
+    }
+
+    async cleanupAndDestroy() {
     }
 }
 
@@ -185,7 +191,7 @@ list of matched APIs.
                 logger.warn(`Tried to read: ${jsFilePaths}`);
                 return false;
             }
-            qm.findMatches();
+            await qm.findMatches();
             const results = Array.from(qm.getMatchedResults());
             if (!results.length) {
                 return false;
@@ -213,6 +219,10 @@ list of matched APIs.
         entries = entries.filter(de => de.name.endsWith(".js"));
         // parentPath: Node v21.4.0+ / (deprecated) path: Node v18.17.0+
         return entries.map(de => path.join(de.parentPath || de.path, de.name));
+    }
+
+    async cleanupAndDestroy() {
+        this.qc.destroy();
     }
 };
 
@@ -361,6 +371,9 @@ ${this.constructor.COMMAND_SETUP_METADATA}`
             return true;
         }
         return true;
+    }
+
+    async cleanupAndDestroy() {
     }
 }
 
@@ -519,6 +532,7 @@ async function main() {
     });
 
     await pendingPromise;
+    await filterCmd.cleanupAndDestroy();
 
     return 0;
 }

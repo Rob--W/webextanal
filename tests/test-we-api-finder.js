@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const test = require("node:test");
 const weApiFinder = require("../helpers/we-api-finder");
 const QueryCompiler = weApiFinder.QueryCompiler;
+const weApiFinderAsync = require("../helpers/we-api-finder/async");
 
 test("QueryCompiler and QueryMatcher", () => {
   const qc = new QueryCompiler();
@@ -48,6 +49,90 @@ test("QueryCompiler and QueryMatcher", () => {
     new Set(["storage.local.get", "storage.sync.onChanged.addListener"]),
     qm2.getMatchedResults()
   );
+});
+
+test("Async QueryCompiler and AsyncQueryMatcher", async () => {
+  const qc = new weApiFinderAsync.QueryCompiler();
+  qc.addQuery("tabs.create");
+  qc.addQuery("storage.local.get");
+  qc.addQuery("storage.sync.onChanged.addListener");
+
+  const qm = qc.newQueryMatcher();
+  assert.strictEqual(qm.constructor.name, "AsyncQueryMatcher");
+
+  assert.throws(
+    () => qc.addQuery("anotherquery"),
+    /addQuery cannot be called after newQueryMatcher!/
+  );
+
+  qm.addSource(" storage.local.get ");
+  qm.addSource(" anotherquery ");
+  qm.addSource(" tabs.create ");
+
+  let res = qm.findMatches();
+  assert(res instanceof Promise, "findMatches() should return a Promise");
+  assert.throws(
+    () => qm.getMatchedResults(),
+    /Attempted to get results before findMatches resolved/
+  );
+  await res;
+  let results = qm.getMatchedResults();
+
+  assert.deepStrictEqual(
+    new Set(["tabs.create", "storage.local.get"]),
+    results
+  );
+
+  // Now verify that when multiple queries happen, that they all resolve,
+  // with the expected result passed to the caller.
+  const numThreads = qc.workerPool.numThreads;
+  assert(numThreads > 0, "numThreads > 0 by default");
+  if (numThreads < 2) {
+    console.warn("numThreads is lower than 2, the test is not as meaningful!");
+  }
+
+  let queryMatchers = [];
+  for (let i = 0; i < numThreads * 2; ++i) {
+    const qm = qc.newQueryMatcher();
+    // To tell the difference between queries, let the result be different
+    // depending on the number of results.
+    if (i % 2) {
+      qm.addSource("tabs.create // " + i);
+    }
+    queryMatchers.push(qm);
+  }
+
+  // Initially, one worker because we queried once.
+  assert.strictEqual(qc.workerPool.workers.length, 1);
+  assert.strictEqual(qc.workerPool.idleWorkers.length, 1);
+
+  // Now fire off all tasks synchronously, and expect the number of workers to
+  // increase, up until the ceiling.
+  let pendingMatchers = [];
+  for (let i = 0; i < queryMatchers.length; ++i) {
+    pendingMatchers.push(queryMatchers[i].findMatches());
+    if (i < numThreads) {
+      assert.strictEqual(qc.workerPool.workers.length, i + 1);
+    } else {
+      assert.strictEqual(qc.workerPool.workers.length, numThreads);
+    }
+  }
+
+  assert.strictEqual(qc.workerPool.idleWorkers.length, 0);
+  await Promise.all(pendingMatchers);
+  assert.strictEqual(qc.workerPool.idleWorkers.length, numThreads);
+
+  for (let i = 0; i < queryMatchers.length; ++i) {
+    const results = queryMatchers[i].getMatchedResults();
+    if (i % 2) {
+      assert.deepStrictEqual(new Set(["tabs.create"]), results);
+    } else {
+      assert.deepStrictEqual(new Set([]), results);
+    }
+  }
+
+  assert.strictEqual(qc.workerPool.workers.length, numThreads);
+  await qc.destroy();
 });
 
 function assertQueryMatch(query, sourceText) {
@@ -129,6 +214,18 @@ test("findMatches: aliases", () => {
 });
 
 test("findMatches: comments", () => {
+  // Matches calls within comment
+  assertQueryMatch("ns.api", "// ns.api");
+  assertQueryMatch("ns.api", "// alias=browser.ns;\n//alias.api");
+  assertQueryMatch("ns.api", "/* ns.api *.");
+  assertQueryMatch("ns.api", "/* alias=browser.ns;\n//alias.api */");
+  assertQueryMatch("ns.api", "ns/**/./*x*/api");
+  assertQueryMatch("ns.api", "ns//comment\n.api");
+  assertQueryMatch("ns.api", "foo + 'http://foo' + ns/*x*/.api");
+  assertQueryMatch("ns.api.third", "ns//comment\n.api//com\n.//ment\nthird");
+});
+
+test("AsyncQueryMatcher", () => {
   // Matches calls within comment
   assertQueryMatch("ns.api", "// ns.api");
   assertQueryMatch("ns.api", "// alias=browser.ns;\n//alias.api");

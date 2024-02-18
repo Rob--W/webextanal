@@ -143,6 +143,8 @@ class QueryCompiler {
   newQueryMatcher() {
     return new QueryMatcher(this.queriesAndPatterns);
   }
+  destroy() {
+  }
 }
 
 class QueryMatcher {
@@ -160,6 +162,8 @@ class QueryMatcher {
     this.sourceTexts.add(sourceText);
     this.sourceTexts.add(sourceTextWithoutComments);
   }
+  // Note: we-api-finder/async.js exports an identical interface, except with
+  // an async findMatches method.
   findMatches() {
     // Relying on sharedRegExps to ensure that every pattern with the same
     // pattern/serialization has the same RegExp instance.
@@ -190,3 +194,4 @@ class QueryMatcher {
 }
 
 exports.QueryCompiler = QueryCompiler;
+exports.QueryMatcher = QueryMatcher; // for use by we-api-finder/worker.js
